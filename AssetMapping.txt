@@ -1,0 +1,560 @@
+package com.costco.contentstack;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.opencsv.bean.CsvBindByName;
+import com.opencsv.bean.CsvToBean;
+
+public class AssetMapping extends CsvToBean{
+
+    @CsvBindByName(column = "brandFinderUrl")
+    private String brandFinderUrl;
+
+    @CsvBindByName(column = "aemDamPath")
+    private String aemDamPath;
+
+    @CsvBindByName(column = "aemFullUrl")
+    private String aemFullUrl;
+
+    // Default constructor for Jackson
+    public AssetMapping() {}
+
+    public AssetMapping(String brandFinderUrl, String aemDamPath, String aemFullUrl) {
+        this.brandFinderUrl = brandFinderUrl;
+        this.aemDamPath = aemDamPath;
+        this.aemFullUrl = aemFullUrl;
+    }
+
+    public String getBrandFinderUrl() {
+        return brandFinderUrl;
+    }
+
+    public void setBrandFinderUrl(String brandFinderUrl) {
+        this.brandFinderUrl = brandFinderUrl;
+    }
+
+    public String getAemDamPath() {
+        return aemDamPath;
+    }
+
+    public void setAemDamPath(String aemDamPath) {
+        this.aemDamPath = aemDamPath;
+    }
+
+    public String getAemFullUrl() {
+        return aemFullUrl != null ? aemFullUrl : aemDamPath;
+    }
+
+    public void setAemFullUrl(String aemFullUrl) {
+        this.aemFullUrl = aemFullUrl;
+    }
+}
+==============================================================================================
+package com.costco.contentstack;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Profile;
+import org.springframework.web.client.RestClient;
+import org.springframework.boot.web.servlet.ServletComponentScan;
+
+@SpringBootApplication
+public class ConsumingRestApplication {
+
+  private static final Logger log = LoggerFactory.getLogger(ConsumingRestApplication.class);
+
+  public static void main(String[] args) {
+    SpringApplication.run(ConsumingRestApplication.class, args);
+  }
+}
+=========================================================================================================
+package com.costco.contentstack;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.List;
+
+@Service
+public class ContentStackClient { 
+    private static final Logger LOG = LoggerFactory.getLogger(ContentStackClient.class);
+
+    private final HttpClient httpClient;
+    private final ObjectMapper objectMapper;
+    private final String baseUrl;
+    private final String apiKey;
+    private final String managementToken;
+
+    public ContentStackClient(@Value("${app.contentstack_baseUrl}") String baseUrl, @Value("${app.contentstack_apiKey}") String apiKey, @Value("${app.contentstack_managementToken}") String managementToken) {
+        LOG.info("Inside constructor of ContentStackClient");
+        this.httpClient = HttpClient.newHttpClient();
+        LOG.info("httpclient in ContentStackCLient Config is:{}",this.httpClient);
+        this.objectMapper = new ObjectMapper();
+        this.baseUrl = baseUrl;
+        this.apiKey = apiKey;
+        this.managementToken = managementToken;
+    }
+
+    public List<ContentType> getContentTypes() throws Exception {
+        String url = baseUrl + "/v3/content_types";
+        LOG.info("ContentStackapi_key is{}",apiKey);
+        LOG.info("ContentStackmanagementToken is{}",managementToken);
+        LOG.info("ContentStackbaseUrl is{}",baseUrl);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("api_key", apiKey)
+                .header("authorization", managementToken)
+                .header("Content-Type", "application/json")
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to fetch content types: " + response.statusCode() + " " + response.body());
+        }
+
+        JsonNode root = objectMapper.readTree(response.body());
+        JsonNode contentTypes = root.get("content_types");
+
+        List<ContentType> result = new ArrayList<>();
+        if (contentTypes != null && contentTypes.isArray()) {
+            for (JsonNode ct : contentTypes) {
+                result.add(new ContentType(ct.get("uid").asText(), ct.get("title").asText()));
+            }
+        }
+
+        return result;
+    }
+
+    public List<Entry> getEntries(String contentTypeUid) throws Exception {
+        List<Entry> allEntries = new ArrayList<>();
+        int skip = 0;
+        final int limit = 100;
+
+        while (true) {
+            String url = String.format("%s/v3/content_types/%s/entries?skip=%d&limit=%d",
+                    baseUrl, contentTypeUid, skip, limit);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("api_key", apiKey)
+                    .header("authorization", managementToken)
+                    .header("Content-Type", "application/json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Failed to fetch entries: " + response.statusCode() + " " + response.body());
+            }
+
+            JsonNode root = objectMapper.readTree(response.body());
+            JsonNode entries = root.get("entries");
+
+            if (entries != null && entries.isArray()) {
+                for (JsonNode entry : entries) {
+                    allEntries.add(new Entry(entry.get("uid").asText(),
+                            entry.has("title") ? entry.get("title").asText() : entry.get("uid").asText(),
+                            entry));
+                }
+
+                if (entries.size() < limit) {
+                    break;
+                }
+            } else {
+                break;
+            }
+
+            skip += limit;
+        }
+
+        return allEntries;
+    }
+
+    public void updateEntry(String contentTypeUid, String entryUid, JsonNode entryData) throws Exception {
+        String url = String.format("%s/v3/content_types/%s/entries/%s", baseUrl, contentTypeUid, entryUid);
+
+        String jsonBody = objectMapper.writeValueAsString(objectMapper.createObjectNode().set("entry", entryData));
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("api_key", apiKey)
+                .header("authorization", managementToken)
+                .header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Failed to update entry: " + response.statusCode() + " " + response.body());
+        }
+    }
+
+    public static class ContentType {
+        private final String uid;
+        private final String title;
+
+        public ContentType(String uid, String title) {
+            this.uid = uid;
+            this.title = title;
+        }
+
+        public String getUid() { return uid; }
+        public String getTitle() { return title; }
+    }
+
+    public static class Entry {
+        private final String uid;
+        private final String title;
+        private final JsonNode data;
+
+        public Entry(String uid, String title, JsonNode data) {
+            this.uid = uid;
+            this.title = title;
+            this.data = data;
+        }
+
+        public String getUid() { return uid; }
+        public String getTitle() { return title; }
+        public JsonNode getData() { return data; }
+    }
+}
+===========================================================================================================================
+package com.costco.contentstack;
+
+import com.costco.contentstack.ContentStackClient.ContentType;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Service
+public class ContentStackReferenceUpdaterService {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ContentStackReferenceUpdaterService.class);
+
+    @Autowired
+    private ContentStackClient client;
+
+    @Autowired
+    ContentStackUpdaterConfig config;
+
+    private Map<String, AssetMapping> mappingLookup;
+    private boolean dryRun = false;
+    private String contentTypeFilter = null;
+
+    public void setContentStackClient() {
+        this.client = new ContentStackClient(
+            ContentStackUpdaterConfig.contentstack_baseUrl,
+            ContentStackUpdaterConfig.contentstack_apiKey,
+            ContentStackUpdaterConfig.contentstack_managementToken
+        ); 
+        LOG.info("base_url is {}",ContentStackUpdaterConfig.contentstack_baseUrl);
+        LOG.info("ContentStack ApiKey is {}",ContentStackUpdaterConfig.contentstack_apiKey);
+        LOG.info("ContentStack Management Token is {}",ContentStackUpdaterConfig.contentstack_managementToken);
+        LOG.info("ContentStack Reference Updater Service activated");
+    }
+
+    public void setAssetMappings(List<AssetMapping> assetMappings) {
+        this.mappingLookup = new HashMap<>();
+        for (AssetMapping mapping : assetMappings) {
+            if (mapping.getBrandFinderUrl() != null) {
+                mappingLookup.put(mapping.getBrandFinderUrl(), mapping);
+            }
+        }
+        LOG.info("Loaded {} asset mappings", mappingLookup.size());
+    }
+
+    public void setDryRun(boolean dryRun) {
+        this.dryRun = dryRun;
+    }
+
+    public void setContentTypeFilter(String contentTypeFilter) {
+        this.contentTypeFilter = contentTypeFilter;
+    }
+
+    public UpdateResult runUpdate() {
+        UpdateResult result = new UpdateResult();
+
+        try {
+            List<String> contentTypes = client.getContentTypes().stream().map(ContentType::getUid).collect(Collectors.toList());
+            LOG.info("Found {} content types", contentTypes.size());
+
+            for (String contentTypeUid : contentTypes) {
+                if (contentTypeFilter != null && !contentTypeFilter.equals(contentTypeUid)) {
+                    continue;
+                }
+
+                List<JsonNode> entries = client.getEntries(contentTypeUid).stream().map(ContentStackClient.Entry::getData).collect(Collectors.toList());
+
+                for (JsonNode entry : entries) {
+                    result.entriesScanned++;
+                    boolean updated = processEntry(entry, contentTypeUid, result);
+                    if (updated) {
+                        result.entriesUpdated++;
+                    }
+                }
+            }
+
+        } catch (IOException e) {
+            LOG.error("Error during update process", e);
+            result.errors.add(e.getMessage());
+        } 
+        catch(Exception e)
+        {
+            LOG.error("Error during update process", e);
+            result.errors.add(e.getMessage());
+        }finally {
+           /*  try {
+                client.close();
+            } catch (IOException e) {
+                LOG.warn("Error closing client", e);
+            }*/
+        }
+
+        return result;
+    }
+
+    private boolean processEntry(JsonNode entry, String contentTypeUid, UpdateResult result) {
+        String entryUid = entry.path("uid").asText();
+        boolean modified = false;
+
+        // Recursively process the entry JSON for references
+        JsonNode processed = processJsonNode(entry, result);
+        modified = !processed.equals(entry);
+        if (modified) {
+            if (!dryRun) { 
+                try {
+                    client.updateEntry(contentTypeUid, entryUid, processed);
+                    LOG.info("Updated entry {}", entryUid);
+                } catch (IOException e) {
+                    LOG.error("Failed to update entry {}", entryUid, e);
+                    result.errors.add("Failed to update entry " + entryUid + ": " + e.getMessage());
+                    return false;
+                }
+                catch(Exception e){
+                    LOG.error("Failed to update entry {}", entryUid, e);
+                    result.errors.add("Failed to update entry " + entryUid + ": " + e.getMessage());
+                    return false;
+                }
+            } else {
+                LOG.info("Would update entry {} (dry run)", entryUid);
+            }
+        }
+
+        return modified;
+    }
+
+    private JsonNode processJsonNode(JsonNode node, UpdateResult result) {
+     if (node.isObject()) {
+            ObjectNode obj = (ObjectNode) node.deepCopy();
+            for (String field : new String[]{"title", "description", "content", "rich_text_editor","markdown_text"}) { // Common fields
+              // String field = "title";
+            if (obj.has(field)) {
+                    String original = obj.get(field).asText();
+                    String updated = replaceReferences(original, result);
+                    if (!original.equals(updated)) {
+                        obj.put(field, updated);
+                    }
+                }
+            }
+            return obj;
+        }    else if (node.isArray()) {
+            // Handle arrays if needed
+            return node;
+        }
+       else  if (node.isTextual()) {
+            String text = node.asText();
+            String updated = replaceReferences(text, result);
+            return updated.equals(text) ? node : node.findPath(updated);
+        } 
+        return node;
+    }
+
+    private String replaceReferences(String text, UpdateResult result) {
+        if (text == null || mappingLookup == null) return text;
+
+        String updated = text;
+        for (Map.Entry<String, AssetMapping> entry : mappingLookup.entrySet()) {
+            String brandFinderUrl = entry.getKey();
+            AssetMapping mapping = entry.getValue();
+
+            if (updated.contains(brandFinderUrl)) {
+                updated = updated.replace(brandFinderUrl, mapping.getAemFullUrl());
+                result.referencesReplaced++;
+                LOG.info("Replaced {} with {}", brandFinderUrl, mapping.getAemFullUrl());
+            }
+        }
+        return updated;
+    }
+
+    public static class UpdateResult {
+        public int entriesScanned = 0;
+        public int entriesUpdated = 0;
+        public int referencesReplaced = 0;
+        public List<String> errors = new java.util.ArrayList<>();
+    }
+}
+==========================================================================================================================================
+package com.costco.contentstack;
+
+import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ContentStackUpdaterConfig {
+
+    @Value("${app.contentstack_apiKey:blt2e8bfde2ef59d1ee}")
+  public static  String contentstack_apiKey="blt2e8bfde2ef59d1ee";
+
+    @Value("${app.contentstack_managementToken:cs0bdd1c12d440811cc77f2cde}")
+   public static String contentstack_managementToken="cs0bdd1c12d440811cc77f2cde";
+
+    @Value("${app.contentstack_environment:development}")
+   public static String contentstack_environment="development";
+
+    @Value("${app.contentstack_branch:main}")
+   public static String contentstack_branch="main";
+    
+    @Value("${app.contentstack_baseUrl:https://azure-na-api.contentstack.com}")
+   public static String contentstack_baseUrl="https://azure-na-api.contentstack.com";
+
+    @Value("${app:aem_damBaseUrl:https://dam.costco.com}")
+    public static String aem_damBaseUrl="https://dam.costco.com";
+
+    @Value("${app.assetMappingsPath:/content/dam/costco/asset-mappings}")
+   public static String assetMappingsPath="/content/dam/costco/asset-mappings";
+
+    @Value("${app.verboseLogging:false}")
+    public static boolean verboseLogging=false;
+} 
+===================================================================================================================================
+package com.costco.contentstack;
+
+import com.costco.contentstack.ContentStackReferenceUpdaterService.UpdateResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opencsv.CSVParser;
+import com.opencsv.CSVParserBuilder;
+import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.BufferedReader;
+//import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.List;
+
+@RestController
+@RequestMapping("/contentstack-updater")
+public class ContentStackUpdaterServlet {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ContentStackUpdaterServlet.class);
+
+    @Autowired
+    private ContentStackReferenceUpdaterService updaterService;
+
+    ContentStackUpdaterConfig config = new ContentStackUpdaterConfig();
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    ContentStackReferenceUpdaterService.UpdateResult updateResult;
+
+    @PostMapping("/update-references")
+    protected ResponseEntity<UpdateResult> update(@RequestBody MultipartFile file) throws IOException {
+       
+        ResponseEntity<UpdateResult> resultEntity = null;
+        try {
+             List<AssetMapping> assetMappings = new ArrayList<>();
+            updaterService.setContentStackClient();
+            StringBuilder jsonStringBuilder = new StringBuilder();
+           assetMappings = parseCSV(file.getInputStream());
+
+            if (file.isEmpty()) {
+                return ResponseEntity.badRequest().body(new ContentStackReferenceUpdaterService.UpdateResult());
+            }
+
+            updaterService.setAssetMappings(assetMappings);
+           // updaterService.setDryRun(requestBody.path("dryRun").asBoolean(false));
+              updaterService.setDryRun(false);
+            //updaterService.setContentTypeFilter(requestBody.path("contentType").asText(null));
+            updaterService.setContentTypeFilter(null);
+
+            // Run the update
+            ContentStackReferenceUpdaterService.UpdateResult result = updaterService.runUpdate();
+            resultEntity = ResponseEntity.ok(result);
+        } catch (Exception e) {
+            LOG.error("Error processing update request", e);
+        }
+
+        return resultEntity;
+    }
+    private List<AssetMapping> parseCSV(InputStream inputStream) throws IOException {
+        List<AssetMapping> assetMappings = new ArrayList<>();
+        CSVParser parser = new CSVParserBuilder()
+                                .withSeparator(',')
+                                .withIgnoreQuotations(true)
+                                .build();
+       
+        try(InputStreamReader reader = new InputStreamReader(inputStream)){
+
+        BufferedReader bufferedReader = new BufferedReader(reader);
+        String line;
+        // Skip header
+        while ((line = bufferedReader.readLine()) != null) {
+            String[] parts = line.split(",");
+            if (parts.length >= 3) {
+                AssetMapping mapping = new AssetMapping();
+                mapping.setBrandFinderUrl(parts[0].trim());
+                mapping.setAemDamPath(parts[1].trim());
+                mapping.setAemFullUrl(parts[2].trim());
+                assetMappings.add(mapping);
+            }
+        }
+        }catch(Exception e){
+            LOG.error("Error reading CSV file", e);
+        }
+        return assetMappings;
+    }
+
+}
+====================================================================
