@@ -558,3 +558,12 @@ public class ContentStackUpdaterServlet {
 
 }
 ====================================================================
+server.port=8080
+app.contentstack_apiKey=blt2e8bfde2ef59d1ee
+app.contentstack_managementToken=cs0bdd1c12d440811cc77f2cde
+app.contentstack_environment=development
+app.contentstack_branch=main
+app.contentstack_baseUrl=https://azure-na-api.contentstack.com
+app.aem_damBaseUrl=https://dam.costco.com
+assetMappingsPath=/content/dam/costco/asset-mappings
+verboseLogging=false
